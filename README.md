@@ -65,5 +65,6 @@ cvswitch needs root access for certain actions. If you are not in a root account
 Author and contact
 ------------------
 Ignacio Mellado (a.k.a. uavster)  
+Github: [https://github.com/uavster](https://github.com/uavster)  
 Website: [http://uavster.com](http://uavster.com)  
 Contact: [http://uavster.com/contact](http://uavster.com/contact)
