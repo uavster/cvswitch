@@ -1,0 +1,386 @@
+#!/bin/bash
+#
+# @@@@
+# Name: cvswitch
+# Author: Ignacio Mellado (a.k.a. uavster)
+# Description: This tool allows to take snapshots of OpenCV installations and 
+# switch between them. Once and OpenCV version is installed, you can take a
+# snapshot of it with 'cvswitch save'. This will store all the necessary
+# headers, libraries and pkg-config files for the current version in a private
+# directory for later recovery. The files will be associated to the version 
+# number. Then, you can make any previously saved version your current one with
+# 'cvswith _version_name_'.
+#
+# Workflow example:
+# 1) OpenCV 2.3.1.0 is installed in your system and you code program A with it
+# 2) You store the current version with 'cvswitch save'
+# 3) You upgrade OpenCV to version 2.4.9.0 and code program B using new stuff
+# 4) You fix some things in A and want to verify that it still builds with
+#    OpenCV 2.3.1.0, so you run 'cvswitch 2.3.1.0' to downgrade and test.
+#    Before doing the switch, version 2.4.9.0 is automatically saved.
+# 5) You install OpenCV 3.0.0-alpha to test some new features in program C
+# 6) Now, B does not build with the new OpenCV version, so you switch back
+#    to 2.4.9.0 with 'cvswitch 2.4.9.0' to continue working on B. Before doing
+#    the switch, the script automatically saves version 3.0.0-alpha.
+# 7) Then, you 'cvswitch 3.0.0-alpha' back to keep testing experimental features
+# 8) You rebuild version 2.4.9.0 with different configuration to try to improve
+#     performance and install it again, but the new config breaks something.
+# 9) 'cvswitch 2.4.9.0' brings the working 2.4.9.0 back to life.
+#
+# Actions:
+#
+# Save the current OpenCV version:
+#    cvswitch save
+#
+# Show the list of saved versions:
+#    cvswitch
+#    or
+#    cvswitch list
+#
+# Switch to a saved version:
+#    cvswitch _saved_version_
+#    (If the current version was not already saved, it does so beforehand)
+#
+# Print this help screen:
+#    cvswitch help 
+#    or
+#    cvswitch --help
+# @@@@
+
+# Shows lines in this file between the @@@@ markers
+function showHelp() {
+    sed '/^# @@@@/,/^# @@@@/ !d' "$scriptPath" | sed 's/^#*//' | sed 's/@@@@//'
+}
+
+# Shows stored versions
+function showSavedVersions() {
+    curVersion=$(getCurrentOpenCVVersion)
+    local dirs=$(ls -d "$storagePath"/*/ 2>/dev/null) 
+    for d in $dirs ; do
+        local version=$(basename "$d")
+        if [ "$version" == "$curVersion" ] ; then
+            echo "$version -> [current]"
+        else
+            echo $version
+        fi
+    done
+}
+
+# Reads define value from header
+# $1 - path to file
+# $2 - define name
+function readDefine() {
+    local headerPath="$1"
+    local defineName="$2"
+    local regexp="^\s*#define\s*$defineName\s*"
+    grep -e "$regexp" "$headerPath" | sed -r "s/$regexp//" | sed -r 's/\s*$//' | sed -r 's/^\"*//' | sed -r 's/\"*$//'
+}
+
+# Forms version string for a given include path
+# $1 - include path
+# $2 - max. version string components
+function composeVersionName() {
+    local headerPath="$1"/opencv2/core/version.hpp
+    if [ ! -f "$headerPath" ] ; then
+        return 1
+    fi
+    local maxComps
+    if [ "$2" == "" ] ; then
+        maxComps=4
+    else
+        maxComps=$2
+    fi
+
+    local comp1
+    local comp2
+    local comp3
+    local dot3
+    local comp4
+
+    if [[ $(readDefine "$headerPath" "CV_VERSION_EPOCH") != "" ]] ; then
+        # Version specification before 3.0.0
+        comp1="CV_VERSION_EPOCH"
+        comp2="CV_VERSION_MAJOR"
+        comp3="CV_VERSION_MINOR"
+        dot3="."
+        comp4="CV_VERSION_REVISION"
+    else
+        # Version specification after 3.0.0
+        comp1="CV_VERSION_MAJOR"
+        comp2="CV_VERSION_MINOR"
+        comp3="CV_VERSION_REVISION"
+        dot3=""
+        comp4="CV_VERSION_STATUS"
+    fi
+    
+    result=""
+    if [ $maxComps -gt 0 ] ; then
+        result=$result$(readDefine "$headerPath" "$comp1")
+    fi
+    if [ $maxComps -gt 1 ] ; then
+        result=$result"."$(readDefine "$headerPath" "$comp2")
+    fi
+    if [ $maxComps -gt 2 ] ; then
+        result=$result"."$(readDefine "$headerPath" "$comp3")
+    fi
+    if [ $maxComps -gt 3 ] ; then
+        result=$result"$dot3"$(readDefine "$headerPath" "$comp4")
+    fi
+    echo "$result"
+    return 0
+}
+
+# Returns the include path for a saved version
+# $1 - save version name
+function getIncludePathForSavedVersion() {
+    echo "$storagePath/$1/include"
+}
+
+# Returns the lib path for a saved version
+# $1 - save version name
+function getLibPathForSavedVersion() {
+    echo "$storagePath/$1/lib"
+}
+
+# Returns the pkg-config path for a saved version
+# $1 - save version name
+function getPkgConfigPathForSavedVersion() {
+    echo "$storagePath/$1/pkgconfig"
+}
+
+function getCurrentOpenCVInstallPrefix() {
+    pkg-config --cflags opencv 2> /dev/null | sed -r 's/\/include\/opencv.*$//' | sed -r 's/^.*-I\s*//'
+}
+
+function getCurrentOpenCVIncludePath() {    
+    prefix=$(getCurrentOpenCVInstallPrefix)
+    if [ "$prefix" != "" ] ; then
+        echo "$prefix"/include
+    fi
+}
+
+function getCurrentOpenCVLibPath() {
+    prefix=$(getCurrentOpenCVInstallPrefix)
+    if [ "$prefix" != "" ] ; then
+        echo "$prefix"/lib
+    fi
+}
+
+function getCurrentOpenCVVersion() {
+    includePath=$(getCurrentOpenCVIncludePath)
+    if [ "$includePath" != "" ] ; then
+        composeVersionName "$includePath" $1
+        return 0
+    else
+        return 1
+    fi
+}
+
+function findOpenCVPkgConfigFile() {
+    version="$1"
+    searchPath="$PKG_CONFIG_PATH"
+    if [ "$searchPath" == "" ] ; then
+        return 2
+    fi
+    local anyValid=""
+    IFS=':' read -ra pcPaths <<< "$searchPath"
+    for pcPath in "${pcPaths[@]}"; do
+        if [ "$pcPath" != "" ] ; then
+            anyValid="$pcPath"
+            if [ -f "$pcPath/opencv.pc" ] ; then
+                anyValid="$pcPath"
+                # Check the version is the one we look for
+                grep "^Version:\s*$version\s*$" "$pcPath/opencv.pc" >& /dev/null
+                if [ "$?" == "0" ] ; then
+                    echo "$pcPath/opencv.pc"
+                    return 0
+                fi
+            fi
+        fi
+    done
+    echo "$anyValid"
+    return 1
+}
+
+function checkPkgConfigPathDefinition() {
+    if [ "$PKG_CONFIG_PATH" == "" ] ; then
+        echo "Possible cause: PKG_CONFIG_PATH is not defined. If you are using sudo to run this script, this variable might be defined for your original user but not for the one that sudo is switching to. In such case, forcing sudo to preserve the variable would solve the problem. This can be done in two ways:"
+        echo "1) Run again with 'sudo -E your_command_line'"
+        echo "2) Enter sudo configuration file with 'sudo visudo' and add the following line at the beginning, together with the rest of defaults:"
+        echo "   Defaults env_keep +=\"PKG_CONFIG_PATH\""
+    fi
+}
+
+# Save current version under its name
+function saveCurrentVersion() {
+    # Initialize placeholder for current version
+    local curVersionName=$(getCurrentOpenCVVersion)
+    if [ "$curVersionName" == "" ] ; then
+        echo "Error: No OpenCV installation found (or pkg-config is not correctly configured to locate OpenCV)"
+        return 2
+    fi
+    rm -f -r "$storagePath/$curVersionName"
+    mkdir -p "$storagePath/$curVersionName"
+    # Store headers
+    local cvIncPath=$(getCurrentOpenCVIncludePath)
+    local saveIncPath=$(getIncludePathForSavedVersion "$curVersionName")
+    mkdir -p "$saveIncPath/opencv"
+    mkdir -p "$saveIncPath/opencv2"
+    cp -rl "$cvIncPath/opencv" "$saveIncPath"
+    cp -rl "$cvIncPath/opencv2" "$saveIncPath"
+    # Store libs
+    local cvLibPath=$(getCurrentOpenCVLibPath)
+    local saveLibPath=$(getLibPathForSavedVersion "$curVersionName")
+    mkdir -p "$saveLibPath"
+    local mask1="libopencv_*.so.$(getCurrentOpenCVVersion 3)"
+    local mask2="libopencv_*.so.$(getCurrentOpenCVVersion 2)"
+    local mask3="libopencv_*.so"
+    local mask4="libopencv_*.a.$(getCurrentOpenCVVersion 3)"
+    local mask5="libopencv_*.a.$(getCurrentOpenCVVersion 2)"
+    local mask6="libopencv_*.a"
+    cp -lf "$cvLibPath/"$mask1 "$saveLibPath" > /dev/null 2>&1
+    cp -lf "$cvLibPath/"$mask2 "$saveLibPath" > /dev/null 2>&1
+    cp -lf "$cvLibPath/"$mask3 "$saveLibPath" > /dev/null 2>&1
+    cp -lf "$cvLibPath/"$mask4 "$saveLibPath" > /dev/null 2>&1
+    cp -lf "$cvLibPath/"$mask5 "$saveLibPath" > /dev/null 2>&1
+    cp -lf "$cvLibPath/"$mask6 "$saveLibPath" > /dev/null 2>&1
+    # Store pkg-config info
+    # Search opencv.pc in all pkg-config search paths
+    local pkgconfigSavePath=$(getPkgConfigPathForSavedVersion "$curVersionName")
+    mkdir -p "$pkgconfigSavePath"
+    local opencvPCPath
+    opencvPCPath=$(findOpenCVPkgConfigFile $(getCurrentOpenCVVersion 3))
+    if [ $? -eq 0 ] ; then
+        cp -l "$opencvPCPath" "$pkgconfigSavePath"
+        echo "Version $curVersionName saved."
+        return 0
+    else
+        echo "Warning: opencv.pc not found. Pkg-config's configuration for OpenCV could not be saved."
+        checkPkgConfigPathDefinition
+        return 1
+    fi
+}
+
+function resolveVersionName() {
+    local nameClue="$1"
+    local possibilities=()
+    local dirs=$(ls -d "$storagePath"/*/ 2>/dev/null) 
+    for d in $dirs ; do
+        local name=$(basename "$d")
+        if [[ $(grep -o "^$nameClue" <<< "$name") == "$nameClue" ]] ; then
+            if [[ $(sed -r "s/^$nameClue//" <<< "$name") == "" ]] ; then
+                echo "$name"
+                return 0
+            else
+                possibilities+=("$name")
+            fi
+        fi
+    done
+    if [ ${#possibilities[@]} -eq 0 ] ; then
+        echo "Sorry, no saved version matches your request"
+    elif [ ${#possibilities[@]} -eq 1 ] ; then
+        echo "${possibilities[0]}"
+        return 0
+    else
+        echo "Sorry, what did you mean?"
+        for p in ${possibilities[@]} ; do
+            echo "$p"
+        done
+    fi
+    return 1
+}
+
+function isVersionSaved() {
+    ls "$storagePath/$1" > /dev/null 2>&1
+}
+
+# Restores a saved version and make it the current one
+function restoreVersion() {
+    # Resolver full version name from user's clue
+    version=$(resolveVersionName "$1")
+    if [ $? -ne 0 ] ; then
+        echo "$version" 
+        return 3
+    fi
+    # If the current version was not saved, do it first
+    local res
+    local curVersion=$(getCurrentOpenCVVersion)
+    if [ "$curVersion" != "" ] ; then
+        isVersionSaved $(getCurrentOpenCVVersion)
+        if [ $? -ne 0 ] ; then
+            echo "Current version was not saved. Doing it now..."
+            saveCurrentVersion
+            if [ $? -ne 0 ] ; then
+                echo "ERROR: The version switch was not completed. You still go with $(getCurrentOpenCVVersion) ."
+                return 1
+            fi
+        fi
+    fi
+    # Switch to requested version
+    # Store pkg-config info
+    # Search opencv.pc in all pkg-config search paths
+    local pkgconfigSavePath=$(getPkgConfigPathForSavedVersion "$version")
+    local opencvPCPath
+    local res
+    # Let the restoring opencv.pc decide where to copy headers and libs
+    opencvPCPath=$(findOpenCVPkgConfigFile $(getCurrentOpenCVVersion 3))
+    res=$?
+    if [ $res -eq 0 ] || [ $res -eq 1 ] ; then
+        cp -lf "$pkgconfigSavePath/opencv.pc" "$opencvPCPath"
+        # From here on, pkg-config provides the info for the following cp commands
+    else
+        echo "Warning: opencv.pc placeholder not found. Don't know where to save pkg-config's configuration for OpenCV."
+        checkPkgConfigPathDefinition
+        return 2
+    fi
+    # Restore headers
+    local cvIncPath=$(getCurrentOpenCVIncludePath)
+    local saveIncPath=$(getIncludePathForSavedVersion "$version")
+    rm -rf "$cvIncPath/opencv" "$cvIncPath/opencv2"
+    cp -rlf "$saveIncPath/opencv" "$cvIncPath"
+    cp -rlf "$saveIncPath/opencv2" "$cvIncPath"
+    # Retore libs
+    local cvLibPath=$(getCurrentOpenCVLibPath)
+    local saveLibPath=$(getLibPathForSavedVersion "$version")
+    local mask1="libopencv_*.so.$(getCurrentOpenCVVersion 3)"
+    local mask2="libopencv_*.so.$(getCurrentOpenCVVersion 2)"
+    local mask3="libopencv_*.so"
+    cp -lf "$saveLibPath"/* "$cvLibPath" > /dev/null 2>&1
+
+    ldconfig 2> /dev/null
+
+    echo "Current version: $version"
+}
+
+action="$1"
+
+if [ "$action" != '' ] && [ "$action" != 'list' ] && [ "$action" != 'help' ] && [ "$action" != '--help' ] ; then
+    # Ensure this runs as root
+    if [ $(id -u) -ne 0 ] ; then
+        sudo -E "$0" "$@"
+        exit 0
+    fi
+fi
+
+scriptPath=$(readlink -f "$0")
+storagePath=$HOME/.cvswitch
+
+# Make sure the storage location exists
+mkdir -p "$storagePath"
+
+# Process command
+case "$action" in
+'help'|'--help')
+    showHelp
+    exit 0
+    ;;
+'list'|'')
+    showSavedVersions
+    ;;
+'save')
+    saveCurrentVersion
+    ;;
+*)
+    restoreVersion "$action"
+    ;;
+esac
