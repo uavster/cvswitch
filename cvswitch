@@ -98,32 +98,39 @@ function composeVersionName() {
     local comp4
 
     if [[ $(readDefine "$headerPath" "CV_VERSION_EPOCH") != "" ]] ; then
-        # Version specification before 3.0.0
+        # Version specification for 2.4.x
         comp1="CV_VERSION_EPOCH"
         comp2="CV_VERSION_MAJOR"
         comp3="CV_VERSION_MINOR"
         dot3="."
         comp4="CV_VERSION_REVISION"
-    else
-        # Version specification after 3.0.0
+    elif [[ $(readDefine "$headerPath" "CV_VERSION_MAJOR") != "" ]] ; then
+        # Version specification after 3.x
         comp1="CV_VERSION_MAJOR"
         comp2="CV_VERSION_MINOR"
         comp3="CV_VERSION_REVISION"
         dot3=""
         comp4="CV_VERSION_STATUS"
+    else
+        # Version specification for 2.3.x
+        comp1="CV_MAJOR_VERSION"
+        comp2="CV_MINOR_VERSION"
+        comp3="CV_SUBMINOR_VERSION"
+        dot3=""
+        comp4=""
     fi
     
     result=""
-    if [ $maxComps -gt 0 ] ; then
+    if [ $maxComps -gt 0 ] && [ "$comp1" != "" ] ; then
         result=$result$(readDefine "$headerPath" "$comp1")
     fi
-    if [ $maxComps -gt 1 ] ; then
+    if [ $maxComps -gt 1 ] && [ "$comp2" != "" ] ; then
         result=$result"."$(readDefine "$headerPath" "$comp2")
     fi
-    if [ $maxComps -gt 2 ] ; then
+    if [ $maxComps -gt 2 ] && [ "$comp3" != "" ] ; then
         result=$result"."$(readDefine "$headerPath" "$comp3")
     fi
-    if [ $maxComps -gt 3 ] ; then
+    if [ $maxComps -gt 3 ] && [ "$comp4" != "" ] ; then
         result=$result"$dot3"$(readDefine "$headerPath" "$comp4")
     fi
     echo "$result"
@@ -176,11 +183,23 @@ function getCurrentOpenCVVersion() {
     fi
 }
 
+function findOpenCVPkgConfigFileInDefaultLocation() {
+    if [ -f "/usr/lib/pkgconfig/opencv.pc" ] ; then
+        echo "/usr/lib/pkgconfig/opencv.pc"
+    fi
+}
+
 function findOpenCVPkgConfigFile() {
     version="$1"
     searchPath="$PKG_CONFIG_PATH"
     if [ "$searchPath" == "" ] ; then
-        return 2
+        local defRes=$(findOpenCVPkgConfigFileInDefaultLocation)
+        if [ "$defRes" != "" ] ; then
+            echo "$defRes"
+            return 0
+        else
+            return 2
+        fi
     fi
     local anyValid=""
     IFS=':' read -ra pcPaths <<< "$searchPath"
@@ -198,8 +217,14 @@ function findOpenCVPkgConfigFile() {
             fi
         fi
     done
-    echo "$anyValid"
-    return 1
+    local defRes=$(findOpenCVPkgConfigFileInDefaultLocation)
+    if [ "$defRes" != "" ] ; then
+        echo "$defRes"
+        return 0
+    else
+        echo "$anyValid"
+        return 1
+    fi
 }
 
 function checkPkgConfigPathDefinition() {
@@ -226,8 +251,8 @@ function saveCurrentVersion() {
     local saveIncPath=$(getIncludePathForSavedVersion "$curVersionName")
     mkdir -p "$saveIncPath/opencv"
     mkdir -p "$saveIncPath/opencv2"
-    cp -rl "$cvIncPath/opencv" "$saveIncPath"
-    cp -rl "$cvIncPath/opencv2" "$saveIncPath"
+    cp -rl "$cvIncPath/opencv" "$saveIncPath" > /dev/null 2>&1
+    cp -rl "$cvIncPath/opencv2" "$saveIncPath" > /dev/null 2>&1
     # Store libs
     local cvLibPath=$(getCurrentOpenCVLibPath)
     local saveLibPath=$(getLibPathForSavedVersion "$curVersionName")
@@ -251,7 +276,7 @@ function saveCurrentVersion() {
     local opencvPCPath
     opencvPCPath=$(findOpenCVPkgConfigFile $(getCurrentOpenCVVersion 3))
     if [ $? -eq 0 ] ; then
-        cp -l "$opencvPCPath" "$pkgconfigSavePath"
+        cp -l "$opencvPCPath" "$pkgconfigSavePath" > /dev/null 2>&1
         echo "Version $curVersionName saved."
         return 0
     else
@@ -376,6 +401,9 @@ case "$action" in
     ;;
 'list'|'')
     showSavedVersions
+    ;;
+'current')
+    getCurrentOpenCVVersion
     ;;
 'save')
     saveCurrentVersion

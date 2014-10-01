@@ -6,9 +6,14 @@ Description
 -----------
 This script allows to take snapshots of OpenCV installations and switch between them quickly. Once and OpenCV version is installed, you can take a snapshot of it with `cvswitch save`. This will store all the necessary headers, libraries and pkg-config files for the current version in a private directory for later recovery. The files will be associated to the version number. Then, you can make any previously saved version your current one with `cvswith _version_name_`.
 
-Target system
--------------
-Ubuntu (tested on Ubuntu 12.04 LTS)
+Target system and tests
+-----------------------
+Target system: Ubuntu (tested on Ubuntu 12.04 LTS)
+
+Tested with the following versions of OpenCV:  
+2.3.1  
+2.4.9.0  
+3.0.0-alpha
 
 Workflow example
 -----------------
