@@ -30,6 +30,11 @@ Workflow example
 Actions
 -------
 
+**Show the current OpenCV version**  
+```
+cvswitch current
+```
+
 **Save the current OpenCV version**  
 ```
 cvswitch save

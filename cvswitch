@@ -379,7 +379,7 @@ function restoreVersion() {
 
 action="$1"
 
-if [ "$action" != '' ] && [ "$action" != 'list' ] && [ "$action" != 'help' ] && [ "$action" != '--help' ] ; then
+if [ "$action" != '' ] && [ "$action" != 'list' ] && [ "$action" != 'help' ] && [ "$action" != '--help' ] && [ "$action" != 'current' ] ; then
     # Ensure this runs as root
     if [ $(id -u) -ne 0 ] ; then
         sudo -E "$0" "$@"
