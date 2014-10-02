@@ -15,6 +15,10 @@ Tested with the following versions of OpenCV:
 2.4.9.0  
 3.0.0-alpha
 
+Precautions and Disclaimer
+--------------------------
+Remember that you use CVswitch at your own risk. It is a good idea to keep your OpenCV builds until you are sure that CVswitch is saving/restoring them correctly, since this project is in early beta stage. For the full disclaimer, see the [LICENSE](LICENSE) file.
+
 Workflow example
 -----------------
 1. OpenCV 2.3.1.0 is installed in your system and you code program A with it
